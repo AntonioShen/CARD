@@ -177,7 +177,8 @@ class Diffusion(object):
             shuffle=False,
             num_workers=config.data.num_workers,
         )
-        model = ConditionalModel(config, guidance=config.diffusion.include_guidance)
+        # TODO
+        model = NewConditionalModel(config, guidance=config.diffusion.include_guidance)
         model = model.to(self.device)
         y_acc_aux_model = self.evaluate_guidance_model(test_loader)
         logging.info("\nBefore training, the guidance classifier accuracy on the test set is {:.8f}.\n\n".format(
@@ -313,8 +314,11 @@ class Diffusion(object):
                     y_t_batch = q_sample(y_0_batch, y_T_mean,
                                          self.alphas_bar_sqrt, self.one_minus_alphas_bar_sqrt, t, noise=e)
                     # output = model(x_batch, y_t_batch, t, y_T_mean)
-                    output = model(x_batch, y_t_batch, t, y_0_hat_batch)
+                    # TODO
+                    output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch)
                     loss = (e - output).square().mean()  # use the same noise sample e during training to compute loss
+                    loss_atten_ce = criterion(classification_logits, y_labels_batch.to(self.device))
+                    loss += loss_atten_ce
 
                     # cross-entropy for y_0 reparameterization
                     loss0 = torch.tensor([0])
@@ -332,7 +336,7 @@ class Diffusion(object):
                         logging.info(
                             (
                                     f"epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, "
-                                    f"Noise Estimation loss: {loss.item()}, " +
+                                    f"Noise Estimation loss: {loss.item()}, Atten CE loss: {loss_atten_ce.item()}" +
                                     f"data time: {data_time / (i + 1)}"
                             )
                         )
@@ -340,6 +344,8 @@ class Diffusion(object):
                     # optimize diffusion model that predicts eps_theta
                     optimizer.zero_grad()
                     loss.backward()
+                    # TODO all good till here
+
                     try:
                         torch.nn.utils.clip_grad_norm_(
                             model.parameters(), config.optim.grad_clip
@@ -395,7 +401,8 @@ class Diffusion(object):
                     data_start = time.time()
 
                 logging.info(
-                    (f"epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, Noise Estimation loss: {loss.item()}, " +
+                    (f"epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, Noise Estimation loss: {loss.item()}, "
+                     f"Atten CE loss: {loss_atten_ce.item()} " +
                      f"data time: {data_time / (i + 1)}")
                 )
 
@@ -458,6 +465,7 @@ class Diffusion(object):
                         model.eval()
                         self.cond_pred_model.eval()
                         acc_avg = 0.
+                        atten_acc_avg = 0.
                         for test_batch_idx, (images, target) in enumerate(test_loader):
                             images_unflat = images.to(self.device)
                             if config.data.dataset == "toy" \
@@ -478,9 +486,12 @@ class Diffusion(object):
                                 label_t_0 = p_sample_loop(model, images, target_pred, y_T_mean,
                                                           self.num_timesteps, self.alphas,
                                                           self.one_minus_alphas_bar_sqrt,
-                                                          only_last_sample=True)
+                                                          only_last_sample=True, input_model_original_version=False)
                                 acc_avg += accuracy(label_t_0.detach().cpu(), target.cpu())[0].item()
+                                atten_label_t_0 = model.classifier(images, target_pred)
+                                atten_acc_avg += accuracy(atten_label_t_0.detach().cpu(), target.cpu())[0].item()
                         acc_avg /= (test_batch_idx + 1)
+                        atten_acc_avg /= (test_batch_idx + 1)
                         if acc_avg > max_accuracy:
                             logging.info("Update best accuracy at Epoch {}.".format(epoch))
                             torch.save(states, os.path.join(self.args.log_path, "ckpt_best.pth"))
@@ -491,7 +502,8 @@ class Diffusion(object):
                             (
                                     f"epoch: {epoch}, step: {step}, " +
                                     f"Average accuracy: {acc_avg}, " +
-                                    f"Max accuracy: {max_accuracy:.2f}%"
+                                    f"Max accuracy: {max_accuracy:.2f}%" +
+                                    f"Average attention accuracy: {atten_acc_avg}%"
                             )
                         )
 
@@ -844,7 +856,8 @@ class Diffusion(object):
             num_workers=config.data.num_workers,
         )
 
-        model = ConditionalModel(config, guidance=config.diffusion.include_guidance)
+        # TODO
+        model = NewConditionalModel(config, guidance=config.diffusion.include_guidance)
         if getattr(self.config.testing, "ckpt_id", None) is None:
             if args.eval_best:
                 ckpt_id = 'best'

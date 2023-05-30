@@ -117,7 +117,9 @@ def y_0_reparam(model, x, y, y_0_hat, y_T_mean, t, one_minus_alphas_bar_sqrt):
 
 
 def p_sample_loop(model, x, y_0_hat, y_T_mean, n_steps, alphas, one_minus_alphas_bar_sqrt,
-                  only_last_sample=False):
+                  only_last_sample=False, input_model_original_version=True):
+    if not input_model_original_version:
+        model = model.conditional_model
     num_t, y_p_seq = None, None
     device = next(model.parameters()).device
     z = torch.randn_like(y_T_mean).to(device)

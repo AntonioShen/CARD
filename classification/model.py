@@ -2,6 +2,91 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models.resnet import resnet18, resnet50
+from diffusion_utils import make_beta_schedule, p_sample_loop
+from torch.nn import TransformerEncoder, TransformerEncoderLayer
+
+
+class ComplexSequenceClassifier(nn.Module):
+    def __init__(self, input_dim, num_classes, num_layers=12, num_heads=5, hidden_dim=2048, dropout=0.1):
+        super(ComplexSequenceClassifier, self).__init__()
+        self.input_dim = input_dim
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.hidden_dim = hidden_dim
+        self.dropout = dropout
+
+        # Define the Transformer Encoder layers
+        encoder_layers = TransformerEncoderLayer(d_model=self.input_dim, nhead=self.num_heads,
+                                                 dim_feedforward=self.hidden_dim, dropout=self.dropout)
+        self.transformer_encoder = TransformerEncoder(encoder_layers, num_layers=self.num_layers)
+
+        # Define intermediate layers
+        self.intermediate = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        # Define the final classification layer
+        self.classifier = nn.Linear(hidden_dim, num_classes)
+
+    def forward(self, x):
+        # x shape: [seq_len, batch_size, input_dim]
+        x = self.transformer_encoder(x)
+
+        # Take the representation of the last token
+        last_output = x[-1]
+
+        # Pass through intermediate layers
+        last_output = self.intermediate(last_output)
+
+        # Classify the sequence based on the last token
+        logits = self.classifier(last_output)
+
+        return logits
+
+
+class NewClassifier(nn.Module):
+    def __init__(self, config, net):
+        super(NewClassifier, self).__init__()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        self.num_timesteps = config.diffusion.timesteps
+
+        # pick elements from the time steps with a certain granularity, it always includes t0, which is the last element
+        # of the returned p_sample_loop list
+        self.granularity = 50
+        lst = list(range(self.num_timesteps))
+        self.pick_idx_y_seq = lst[::-self.granularity]
+
+        betas = make_beta_schedule(schedule=config.diffusion.beta_schedule, num_timesteps=config.diffusion.timesteps,
+                                   start=config.diffusion.beta_start, end=config.diffusion.beta_end)
+        betas = self.betas = betas.float().to(self.device)
+        self.betas_sqrt = torch.sqrt(betas)
+        alphas = 1.0 - betas
+        self.alphas = alphas
+        self.one_minus_betas_sqrt = torch.sqrt(alphas)
+        alphas_cumprod = alphas.cumprod(dim=0)
+        self.alphas_bar_sqrt = torch.sqrt(alphas_cumprod)
+        self.one_minus_alphas_bar_sqrt = torch.sqrt(1 - alphas_cumprod)
+
+        # define a noise estimation net
+        self.diffusion_net = net
+        # define a transformer block
+        self.transformer = ComplexSequenceClassifier(input_dim=config.data.num_classes, num_classes=config.data.num_classes)
+
+    def forward(self, x, y_0_hat_batch):
+        y_T_mean = y_0_hat_batch
+        y_seq = p_sample_loop(self.diffusion_net, x, y_0_hat_batch, y_T_mean, self.num_timesteps, self.alphas,
+                              self.one_minus_alphas_bar_sqrt, only_last_sample=False)
+        selected_time_points = [y_seq[i] for i in self.pick_idx_y_seq]
+        selected_time_points = torch.stack(selected_time_points)
+        logits = self.transformer(selected_time_points)
+        # softmax is included in the loss function
+
+        return logits
 
 
 class ConditionalLinear(nn.Module):
@@ -92,6 +177,24 @@ class ConditionalModel(nn.Module):
         y = self.unetnorm3(y)
         y = F.softplus(y)
         return self.lin4(y)
+
+
+class NewConditionalModel(nn.Module):
+    def __init__(self, config, guidance=False):
+        super(NewConditionalModel, self).__init__()
+        self.conditional_model = ConditionalModel(config=config, guidance=guidance)
+        self.classifier = NewClassifier(config=config, net=self.conditional_model)
+
+    def forward(self, x, y, t, yhat=None):
+        if yhat is None:
+            raise ValueError('yhat is None')
+        x_clone = x.clone().detach()
+        yhat_clone = yhat.clone().detach()
+
+        noise_estimation = self.conditional_model(x, y, t, yhat)
+        classification_logits = self.classifier(x_clone, yhat_clone)
+
+        return noise_estimation, classification_logits
 
 
 # Simple convnet

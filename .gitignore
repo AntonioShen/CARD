@@ -2,6 +2,7 @@
 .ipynb_checkpoints/
 __pycache__/
 results/
+classification/data/
 
 
 # OS generated files

@@ -4,7 +4,7 @@ data:
     label_min_max: [0.001, 0.999]
     num_classes: 10
     num_workers: 4
-    dataroot: '/data/datasets/images/cifar10'
+    dataroot: './data/datasets/images/cifar10'
 
 model:
     type: "simple"
@@ -31,7 +31,7 @@ diffusion:
     num_figs: 10
     include_guidance: True  # concat y_t with aux pred as eps_theta input
     apply_aux_cls: True
-    trained_aux_cls_ckpt_path: "/data/classification/pretrained/cifar10_ckpt"
+    trained_aux_cls_ckpt_path: "./data/classification/pretrained/cifar10_ckpt"
     trained_aux_cls_ckpt_name: "snapshot_supervised.ckpt"  # test accuracy 90.39%, applied in the paper
 #    trained_aux_cls_ckpt_name: "snapshot_self_supervised.ckpt"  # test accuracy 94.31%
     aux_cls:
