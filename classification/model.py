@@ -34,10 +34,10 @@ class ComplexSequenceClassifier(nn.Module):
 
     def forward(self, x):
         # x shape: [seq_len, batch_size, input_dim]
-        x = self.transformer_encoder(x)
+        x_trans_seq = self.transformer_encoder(x)
 
         # Take the representation of the last token
-        last_output = x[-1]
+        last_output = x_trans_seq[-1]
 
         # Pass through intermediate layers
         last_output = self.intermediate(last_output)

@@ -316,9 +316,13 @@ class Diffusion(object):
                     # output = model(x_batch, y_t_batch, t, y_T_mean)
                     # TODO
                     output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch)
-                    loss = (e - output).square().mean()  # use the same noise sample e during training to compute loss
-                    loss_atten_ce = criterion(classification_logits, y_labels_batch.to(self.device))
-                    loss += loss_atten_ce
+                    loss_noise_estimation = (e - output).square().mean()  # use the same noise sample e during training to compute loss
+                    # loss_atten_ce = criterion(classification_logits, y_labels_batch.to(self.device))
+                    loss_atten_ce = torch.tensor([0])
+                    # if epoch < 100:
+                    loss = loss_noise_estimation
+                    # else:
+                    #     loss = loss_noise_estimation + loss_atten_ce
 
                     # cross-entropy for y_0 reparameterization
                     loss0 = torch.tensor([0])
@@ -336,7 +340,8 @@ class Diffusion(object):
                         logging.info(
                             (
                                     f"epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, "
-                                    f"Noise Estimation loss: {loss.item()}, Atten CE loss: {loss_atten_ce.item()}" +
+                                    f"Noise Estimation loss: {loss_noise_estimation.item()}, "
+                                    f"Atten CE loss: {loss_atten_ce.item()}, " +
                                     f"data time: {data_time / (i + 1)}"
                             )
                         )
@@ -401,14 +406,18 @@ class Diffusion(object):
                     data_start = time.time()
 
                 logging.info(
-                    (f"epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, Noise Estimation loss: {loss.item()}, "
-                     f"Atten CE loss: {loss_atten_ce.item()} " +
+                    (f"After epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, " +
+                     f"Noise Estimation loss: {loss_noise_estimation.item()}, " +
+                     f"Atten CE loss: {loss_atten_ce.item()}, " +
                      f"data time: {data_time / (i + 1)}")
                 )
 
                 # Evaluate
                 if epoch % self.config.training.validation_freq == 0 \
                         or epoch + 1 == self.config.training.n_epochs:
+
+
+
                     if config.data.dataset == "toy":
                         with torch.no_grad():
                             model.eval()
@@ -501,8 +510,8 @@ class Diffusion(object):
                         logging.info(
                             (
                                     f"epoch: {epoch}, step: {step}, " +
-                                    f"Average accuracy: {acc_avg}, " +
-                                    f"Max accuracy: {max_accuracy:.2f}%" +
+                                    f"Average accuracy: {acc_avg}%, " +
+                                    f"Max accuracy: {max_accuracy:.2f}%, " +
                                     f"Average attention accuracy: {atten_acc_avg}%"
                             )
                         )
