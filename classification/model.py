@@ -4,10 +4,11 @@ import torch.nn.functional as F
 from torchvision.models.resnet import resnet18, resnet50
 from diffusion_utils import make_beta_schedule, p_sample_loop
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
+import copy
 
 
 class ComplexSequenceClassifier(nn.Module):
-    def __init__(self, input_dim, num_classes, num_layers=12, num_heads=5, hidden_dim=2048, dropout=0.1):
+    def __init__(self, input_dim, num_classes, num_layers=12, num_heads=5, hidden_dim=10, dropout=0.1):
         super(ComplexSequenceClassifier, self).__init__()
         self.input_dim = input_dim
         self.num_layers = num_layers
@@ -24,8 +25,6 @@ class ComplexSequenceClassifier(nn.Module):
         self.intermediate = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
             nn.Dropout(dropout)
         )
 
@@ -40,7 +39,7 @@ class ComplexSequenceClassifier(nn.Module):
         last_output = x_trans_seq[-1]
 
         # Pass through intermediate layers
-        last_output = self.intermediate(last_output)
+        # last_output = self.intermediate(last_output)
 
         # Classify the sequence based on the last token
         logits = self.classifier(last_output)
@@ -49,7 +48,7 @@ class ComplexSequenceClassifier(nn.Module):
 
 
 class NewClassifier(nn.Module):
-    def __init__(self, config, net):
+    def __init__(self, config):
         super(NewClassifier, self).__init__()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -73,17 +72,26 @@ class NewClassifier(nn.Module):
         self.one_minus_alphas_bar_sqrt = torch.sqrt(1 - alphas_cumprod)
 
         # define a noise estimation net
-        self.diffusion_net = net
+        # self.diffusion_net = net
         # define a transformer block
-        self.transformer = ComplexSequenceClassifier(input_dim=config.data.num_classes, num_classes=config.data.num_classes)
+        self.transformer = ComplexSequenceClassifier(input_dim=config.data.num_classes,
+                                                     num_classes=config.data.num_classes, hidden_dim=10)
 
-    def forward(self, x, y_0_hat_batch):
+    def forward(self, x, y_0_hat_batch, net):
         y_T_mean = y_0_hat_batch
-        y_seq = p_sample_loop(self.diffusion_net, x, y_0_hat_batch, y_T_mean, self.num_timesteps, self.alphas,
+        y_seq = p_sample_loop(net, x, y_0_hat_batch, y_T_mean, self.num_timesteps, self.alphas,
                               self.one_minus_alphas_bar_sqrt, only_last_sample=False)
         selected_time_points = [y_seq[i] for i in self.pick_idx_y_seq]
         selected_time_points = torch.stack(selected_time_points)
         logits = self.transformer(selected_time_points)
+
+        # y_seq = []
+        # for i in range(self.num_timesteps):
+        #     y_seq.append(torch.zeros_like(y_0_hat_batch, requires_grad=False))
+        # selected_time_points = [y_seq[i] for i in self.pick_idx_y_seq]
+        # selected_time_points = torch.stack(selected_time_points)
+        # logits = self.transformer(selected_time_points)
+
         # softmax is included in the loss function
 
         return logits
@@ -183,16 +191,20 @@ class NewConditionalModel(nn.Module):
     def __init__(self, config, guidance=False):
         super(NewConditionalModel, self).__init__()
         self.conditional_model = ConditionalModel(config=config, guidance=guidance)
-        self.classifier = NewClassifier(config=config, net=self.conditional_model)
+        self.classifier = NewClassifier(config=config)
 
-    def forward(self, x, y, t, yhat=None):
+    def forward(self, x, y, t, yhat=None, include_classifier=True):
         if yhat is None:
             raise ValueError('yhat is None')
         x_clone = x.clone().detach()
         yhat_clone = yhat.clone().detach()
 
         noise_estimation = self.conditional_model(x, y, t, yhat)
-        classification_logits = self.classifier(x_clone, yhat_clone)
+
+        if include_classifier:
+            classification_logits = self.classifier(x_clone, yhat_clone, copy.deepcopy(self.conditional_model))
+        else:
+            classification_logits = torch.zeros_like(yhat_clone)
 
         return noise_estimation, classification_logits
 

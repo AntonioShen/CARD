@@ -51,7 +51,8 @@ def q_sample(y, y_0_hat, alphas_bar_sqrt, one_minus_alphas_bar_sqrt, t, noise=No
 
 
 # Reverse function -- sample y_{t-1} given y_t
-def p_sample(model, x, y, y_0_hat, y_T_mean, t, alphas, one_minus_alphas_bar_sqrt):
+def p_sample(model, x, y, y_0_hat, y_T_mean, t, alphas, one_minus_alphas_bar_sqrt,
+             output_detach=True):
     """
     Reverse diffusion process sampling -- one time step.
 
@@ -75,7 +76,11 @@ def p_sample(model, x, y, y_0_hat, y_T_mean, t, alphas, one_minus_alphas_bar_sqr
     gamma_1 = (sqrt_one_minus_alpha_bar_t_m_1.square()) * (alpha_t.sqrt()) / (sqrt_one_minus_alpha_bar_t.square())
     gamma_2 = 1 + (sqrt_alpha_bar_t - 1) * (alpha_t.sqrt() + sqrt_alpha_bar_t_m_1) / (
         sqrt_one_minus_alpha_bar_t.square())
-    eps_theta = model(x, y, t, y_0_hat).to(device).detach()
+    # TODO
+    if output_detach:
+        eps_theta = model(x, y, t, y_0_hat).to(device).detach()
+    else:
+        eps_theta = model(x, y, t, y_0_hat).to(device)
     # y_0 reparameterization
     y_0_reparam = 1 / sqrt_alpha_bar_t * (
             y - (1 - sqrt_alpha_bar_t) * y_T_mean - eps_theta * sqrt_one_minus_alpha_bar_t)
@@ -88,12 +93,17 @@ def p_sample(model, x, y, y_0_hat, y_T_mean, t, alphas, one_minus_alphas_bar_sqr
 
 
 # Reverse function -- sample y_0 given y_1
-def p_sample_t_1to0(model, x, y, y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt):
+def p_sample_t_1to0(model, x, y, y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt,
+                    output_detach=True):
     device = next(model.parameters()).device
     t = torch.tensor([0]).to(device)  # corresponding to timestep 1 (i.e., t=1 in diffusion models)
     sqrt_one_minus_alpha_bar_t = extract(one_minus_alphas_bar_sqrt, t, y)
     sqrt_alpha_bar_t = (1 - sqrt_one_minus_alpha_bar_t.square()).sqrt()
-    eps_theta = model(x, y, t, y_0_hat).to(device).detach()
+    # TODO
+    if output_detach:
+        eps_theta = model(x, y, t, y_0_hat).to(device).detach()
+    else:
+        eps_theta = model(x, y, t, y_0_hat).to(device)
     # y_0 reparameterization
     y_0_reparam = 1 / sqrt_alpha_bar_t * (
             y - (1 - sqrt_alpha_bar_t) * y_T_mean - eps_theta * sqrt_one_minus_alpha_bar_t)
@@ -101,7 +111,7 @@ def p_sample_t_1to0(model, x, y, y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt):
     return y_t_m_1
 
 
-def y_0_reparam(model, x, y, y_0_hat, y_T_mean, t, one_minus_alphas_bar_sqrt):
+def y_0_reparam(model, x, y, y_0_hat, y_T_mean, t, one_minus_alphas_bar_sqrt, output_detach=True):
     """
     Obtain y_0 reparameterization from q(y_t | y_0), in which noise term is the eps_theta prediction.
     Algorithm 2 Line 4 in paper.
@@ -109,19 +119,23 @@ def y_0_reparam(model, x, y, y_0_hat, y_T_mean, t, one_minus_alphas_bar_sqrt):
     device = next(model.parameters()).device
     sqrt_one_minus_alpha_bar_t = extract(one_minus_alphas_bar_sqrt, t, y)
     sqrt_alpha_bar_t = (1 - sqrt_one_minus_alpha_bar_t.square()).sqrt()
-    eps_theta = model(x, y, t, y_0_hat).to(device).detach()
+    # TODO
+    if output_detach:
+        eps_theta = model(x, y, t, y_0_hat).to(device).detach()
+    else:
+        eps_theta = model(x, y, t, y_0_hat).to(device)
     # y_0 reparameterization
     y_0_reparam = 1 / sqrt_alpha_bar_t * (
             y - (1 - sqrt_alpha_bar_t) * y_T_mean - eps_theta * sqrt_one_minus_alpha_bar_t).to(device)
     return y_0_reparam
 
 
-def p_sample_loop(model, x, y_0_hat, y_T_mean, n_steps, alphas, one_minus_alphas_bar_sqrt,
-                  only_last_sample=False, input_model_original_version=True):
-    if not input_model_original_version:
-        model = model.conditional_model
+def p_sample_loop(model, x, y_0_hat, y_T_mean, n_steps, alphas, one_minus_alphas_bar_sqrt, only_last_sample=False,
+                  input_model_original_version=True, output_detach=True):
     num_t, y_p_seq = None, None
     device = next(model.parameters()).device
+    if not input_model_original_version:
+        model = model.conditional_model
     z = torch.randn_like(y_T_mean).to(device)
     cur_y = z + y_T_mean  # sampled y_T
     if only_last_sample:
@@ -130,17 +144,20 @@ def p_sample_loop(model, x, y_0_hat, y_T_mean, n_steps, alphas, one_minus_alphas
         y_p_seq = [cur_y]
     for t in reversed(range(1, n_steps)):
         y_t = cur_y
-        cur_y = p_sample(model, x, y_t, y_0_hat, y_T_mean, t, alphas, one_minus_alphas_bar_sqrt)  # y_{t-1}
+        cur_y = p_sample(model, x, y_t, y_0_hat, y_T_mean, t, alphas, one_minus_alphas_bar_sqrt,
+                         output_detach=output_detach)  # y_{t-1}
         if only_last_sample:
             num_t += 1
         else:
             y_p_seq.append(cur_y)
     if only_last_sample:
         assert num_t == n_steps
-        y_0 = p_sample_t_1to0(model, x, cur_y, y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt)
+        y_0 = p_sample_t_1to0(model, x, cur_y, y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt,
+                              output_detach=output_detach)
         return y_0
     else:
         assert len(y_p_seq) == n_steps
-        y_0 = p_sample_t_1to0(model, x, y_p_seq[-1], y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt)
+        y_0 = p_sample_t_1to0(model, x, y_p_seq[-1], y_0_hat, y_T_mean, one_minus_alphas_bar_sqrt,
+                              output_detach=output_detach)
         y_p_seq.append(y_0)
         return y_p_seq

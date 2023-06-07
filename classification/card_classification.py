@@ -274,6 +274,8 @@ class Diffusion(object):
                 logging.info("Prior distribution at timestep T has a mean of 0.")
             if args.add_ce_loss:
                 logging.info("Apply cross entropy as an auxiliary loss during training.")
+            # TODO
+            changed_optim = False
             for epoch in range(start_epoch, self.config.training.n_epochs):
                 data_start = time.time()
                 data_time = 0
@@ -314,15 +316,25 @@ class Diffusion(object):
                     y_t_batch = q_sample(y_0_batch, y_T_mean,
                                          self.alphas_bar_sqrt, self.one_minus_alphas_bar_sqrt, t, noise=e)
                     # output = model(x_batch, y_t_batch, t, y_T_mean)
+
                     # TODO
-                    output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch)
+                    warm_up = 40
+                    if epoch < warm_up:
+                        output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch, include_classifier=False)
+                    else:
+                        if not changed_optim:
+                            for param in model.conditional_model.parameters():
+                                param.requires_grad = False
+                            optimizer = get_optimizer(self.config.optim, model.classifier.parameters())
+                            changed_optim = True
+                        output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch, include_classifier=True)
+
                     loss_noise_estimation = (e - output).square().mean()  # use the same noise sample e during training to compute loss
-                    # loss_atten_ce = criterion(classification_logits, y_labels_batch.to(self.device))
-                    loss_atten_ce = torch.tensor([0])
-                    # if epoch < 100:
-                    loss = loss_noise_estimation
-                    # else:
-                    #     loss = loss_noise_estimation + loss_atten_ce
+                    loss_atten_ce = criterion(classification_logits, y_labels_batch.to(self.device))
+                    if epoch < warm_up:
+                        loss = loss_noise_estimation
+                    else:
+                        loss = loss_atten_ce
 
                     # cross-entropy for y_0 reparameterization
                     loss0 = torch.tensor([0])
@@ -339,7 +351,7 @@ class Diffusion(object):
                     if step % self.config.training.logging_freq == 0 or step == 1:
                         logging.info(
                             (
-                                    f"epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, "
+                                    f"During epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, "
                                     f"Noise Estimation loss: {loss_noise_estimation.item()}, "
                                     f"Atten CE loss: {loss_atten_ce.item()}, " +
                                     f"data time: {data_time / (i + 1)}"
@@ -406,7 +418,7 @@ class Diffusion(object):
                     data_start = time.time()
 
                 logging.info(
-                    (f"After epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, " +
+                    (f"epoch: {epoch}, step: {step}, CE loss: {loss0.item()}, " +
                      f"Noise Estimation loss: {loss_noise_estimation.item()}, " +
                      f"Atten CE loss: {loss_atten_ce.item()}, " +
                      f"data time: {data_time / (i + 1)}")
@@ -497,7 +509,7 @@ class Diffusion(object):
                                                           self.one_minus_alphas_bar_sqrt,
                                                           only_last_sample=True, input_model_original_version=False)
                                 acc_avg += accuracy(label_t_0.detach().cpu(), target.cpu())[0].item()
-                                atten_label_t_0 = model.classifier(images, target_pred)
+                                atten_label_t_0 = model.classifier(images, target_pred, model.conditional_model)
                                 atten_acc_avg += accuracy(atten_label_t_0.detach().cpu(), target.cpu())[0].item()
                         acc_avg /= (test_batch_idx + 1)
                         atten_acc_avg /= (test_batch_idx + 1)
