@@ -320,14 +320,16 @@ class Diffusion(object):
                     # TODO
                     warm_up = 40
                     if epoch < warm_up:
-                        output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch, include_classifier=False)
+                        output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch,
+                                                              include_classifier=False)
                     else:
                         if not changed_optim:
                             for param in model.conditional_model.parameters():
                                 param.requires_grad = False
                             optimizer = get_optimizer(self.config.optim, model.classifier.parameters())
                             changed_optim = True
-                        output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch, include_classifier=True)
+                        output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch,
+                                                              include_classifier=True, cond_pred_model=self.cond_pred_model, x_unflat=x_unflat_batch)
 
                     loss_noise_estimation = (e - output).square().mean()  # use the same noise sample e during training to compute loss
                     loss_atten_ce = criterion(classification_logits, y_labels_batch.to(self.device))
@@ -509,7 +511,9 @@ class Diffusion(object):
                                                           self.one_minus_alphas_bar_sqrt,
                                                           only_last_sample=True, input_model_original_version=False)
                                 acc_avg += accuracy(label_t_0.detach().cpu(), target.cpu())[0].item()
-                                atten_label_t_0 = model.classifier(images, target_pred, model.conditional_model)
+                                atten_label_t_0 = model.classifier(images, target_pred,
+                                                                   model.conditional_model,
+                                                                   self.cond_pred_model, images_unflat)
                                 atten_acc_avg += accuracy(atten_label_t_0.detach().cpu(), target.cpu())[0].item()
                         acc_avg /= (test_batch_idx + 1)
                         atten_acc_avg /= (test_batch_idx + 1)

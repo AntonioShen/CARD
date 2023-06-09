@@ -71,26 +71,33 @@ class NewClassifier(nn.Module):
         self.alphas_bar_sqrt = torch.sqrt(alphas_cumprod)
         self.one_minus_alphas_bar_sqrt = torch.sqrt(1 - alphas_cumprod)
 
-        # define a noise estimation net
-        # self.diffusion_net = net
         # define a transformer block
-        self.transformer = ComplexSequenceClassifier(input_dim=config.data.num_classes,
+        self.msa = ComplexSequenceClassifier(input_dim=config.data.num_classes,
                                                      num_classes=config.data.num_classes, hidden_dim=10)
+        self.mca = nn.Transformer(d_model=10, nhead=2, num_encoder_layers=4)
 
-    def forward(self, x, y_0_hat_batch, net):
+        self.lin = nn.Sequential(
+            nn.Linear(512, 10),
+            nn.ReLU(),)
+
+    def forward(self, x, y_0_hat_batch,
+                net,
+                cond_pred_model=None, x_unflat=None):
         y_T_mean = y_0_hat_batch
         y_seq = p_sample_loop(net, x, y_0_hat_batch, y_T_mean, self.num_timesteps, self.alphas,
                               self.one_minus_alphas_bar_sqrt, only_last_sample=False)
         selected_time_points = [y_seq[i] for i in self.pick_idx_y_seq]
         selected_time_points = torch.stack(selected_time_points)
-        logits = self.transformer(selected_time_points)
 
-        # y_seq = []
-        # for i in range(self.num_timesteps):
-        #     y_seq.append(torch.zeros_like(y_0_hat_batch, requires_grad=False))
-        # selected_time_points = [y_seq[i] for i in self.pick_idx_y_seq]
-        # selected_time_points = torch.stack(selected_time_points)
-        # logits = self.transformer(selected_time_points)
+        if cond_pred_model is not None:
+            _feature = cond_pred_model(x_unflat, return_feature=True)
+            _feature = self.lin(_feature)
+            # add one dimension to make it a sequence
+            _feature = _feature.unsqueeze(0)
+            logits = self.mca(_feature, selected_time_points)
+            logits = logits[-1]
+        else:
+            logits = self.msa(selected_time_points)
 
         # softmax is included in the loss function
 
@@ -193,7 +200,8 @@ class NewConditionalModel(nn.Module):
         self.conditional_model = ConditionalModel(config=config, guidance=guidance)
         self.classifier = NewClassifier(config=config)
 
-    def forward(self, x, y, t, yhat=None, include_classifier=True):
+    def forward(self, x, y, t, yhat=None,
+                include_classifier=False, cond_pred_model=None, x_unflat=None):
         if yhat is None:
             raise ValueError('yhat is None')
         x_clone = x.clone().detach()
@@ -202,7 +210,9 @@ class NewConditionalModel(nn.Module):
         noise_estimation = self.conditional_model(x, y, t, yhat)
 
         if include_classifier:
-            classification_logits = self.classifier(x_clone, yhat_clone, copy.deepcopy(self.conditional_model))
+            classification_logits = self.classifier(x_clone, yhat_clone,
+                                                    copy.deepcopy(self.conditional_model),
+                                                    cond_pred_model, x_unflat)
         else:
             classification_logits = torch.zeros_like(yhat_clone)
 
