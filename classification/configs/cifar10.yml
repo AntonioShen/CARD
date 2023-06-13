@@ -35,14 +35,15 @@ diffusion:
     trained_aux_cls_ckpt_name: "snapshot_supervised.ckpt"  # test accuracy 90.39%, applied in the paper
 #    trained_aux_cls_ckpt_name: "snapshot_self_supervised.ckpt"  # test accuracy 94.31%
     aux_cls:
-        arch: resnet18_ckpt  # lenet5
+#        arch: resnet18_ckpt # lenet5
+        arch: beit_ckpt
         pre_train: False
         joint_train: False
         n_pretrain_epochs: 10
         logging_interval: 1
     
 training:
-    batch_size: 256
+    batch_size: 24 #256
     n_epochs: 1000
     warmup_epochs: 40
     add_t0_loss: False
@@ -57,13 +58,13 @@ training:
     image_folder: 'training_image_samples'
 
 sampling:
-    batch_size: 256
+    batch_size: 24 #256
     sampling_size: 1000
     last_only: True
     image_folder: 'sampling_image_samples'
 
 testing:
-    batch_size: 250
+    batch_size: 24 #250
     sampling_size: 1000
     last_only: True
     plot_freq: 200

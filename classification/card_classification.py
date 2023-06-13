@@ -17,6 +17,7 @@ from pretraining.encoder import Model as AuxCls
 from pretraining.resnet import ResNet18
 from utils import *
 from diffusion_utils import *
+from transformers import AutoFeatureExtractor, AutoModelForImageClassification
 
 plt.style.use('ggplot')
 
@@ -104,6 +105,9 @@ class Diffusion(object):
                 elif config.diffusion.aux_cls.arch == "resnet18_ckpt":
                     # self.cond_pred_model = resnet18(pretrained=False).to(self.device)
                     self.cond_pred_model = ResNet18(num_classes=config.data.num_classes).to(self.device)
+                elif config.diffusion.aux_cls.arch == "beit_ckpt":
+                    self.cond_pred_model = AutoModelForImageClassification.\
+                        from_pretrained("jadohu/BEiT-finetuned", output_hidden_states=True).to(self.device)
                 else:
                     self.cond_pred_model = AuxCls(config).to(self.device)
             else:
@@ -136,9 +140,13 @@ class Diffusion(object):
             # minibatch_start = time.time()
             x_batch, y_labels_batch = feature_label_set
             y_labels_batch = y_labels_batch.reshape(-1, 1)
-            y_pred_prob = self.compute_guiding_prediction(
-                x_batch.to(self.device)).softmax(dim=1)  # (batch_size, n_classes)
-            y_pred_label = torch.argmax(y_pred_prob, 1, keepdim=True).cpu().detach().numpy()  # (batch_size, 1)
+            if self.config.diffusion.aux_cls.arch == "beit_ckpt":
+                y_pred_prob = self.compute_guiding_prediction(x_batch.to(self.device))
+                _, y_pred_label = torch.max(y_pred_prob.logits.data, 1)
+                y_pred_label = y_pred_label.reshape(y_labels_batch.shape[0], 1).cpu().detach().numpy()
+            else:
+                y_pred_prob = self.compute_guiding_prediction(x_batch.to(self.device)).softmax(dim=1)  # (batch_size, n_classes)
+                y_pred_label = torch.argmax(y_pred_prob, 1, keepdim=True).cpu().detach().numpy()  # (batch_size, 1)
             y_labels_batch = y_labels_batch.cpu().detach().numpy()
             y_acc = y_pred_label == y_labels_batch  # (batch_size, 1)
             if len(y_acc_list) == 0:
@@ -200,7 +208,10 @@ class Diffusion(object):
             ema_helper = None
 
         if config.diffusion.apply_aux_cls:
-            if hasattr(config.diffusion, "trained_aux_cls_ckpt_path"):  # load saved auxiliary classifier
+            # TODO
+            if config.diffusion.aux_cls.arch == "beit_ckpt":
+                self.cond_pred_model.eval()
+            elif hasattr(config.diffusion, "trained_aux_cls_ckpt_path"):  # load saved auxiliary classifier
                 aux_states = torch.load(os.path.join(config.diffusion.trained_aux_cls_ckpt_path,
                                                      config.diffusion.trained_aux_cls_ckpt_name),
                                         map_location=self.device)
@@ -284,6 +295,10 @@ class Diffusion(object):
                         x_batch, y_one_hot_batch, y_logits_batch, y_labels_batch = feature_label_set
                     else:
                         x_batch, y_labels_batch = feature_label_set
+                        # TODO
+                        if self.config.diffusion.aux_cls.arch == "beit_ckpt":
+                            x_batch_beit = x_batch.clone().to(self.device)
+                            x_batch = nn.functional.interpolate(x_batch, size=(32, 32))
                         y_one_hot_batch, y_logits_batch = cast_label_to_one_hot_and_prototype(y_labels_batch, config)
                         # y_labels_batch = y_labels_batch.reshape(-1, 1)
                     if config.optim.lr_schedule:
@@ -307,7 +322,13 @@ class Diffusion(object):
                     # noise estimation loss
                     x_batch = x_batch.to(self.device)
                     # y_0_batch = y_logits_batch.to(self.device)
-                    y_0_hat_batch = self.compute_guiding_prediction(x_unflat_batch).softmax(dim=1)
+                    # TODO
+                    if self.config.diffusion.aux_cls.arch == "beit_ckpt":
+                        y_0_hat_batch = self.compute_guiding_prediction(x_batch_beit)
+                        # apply softmax to logits
+                        y_0_hat_batch = nn.functional.softmax(y_0_hat_batch.logits, dim=1)
+                    else:
+                        y_0_hat_batch = self.compute_guiding_prediction(x_unflat_batch).softmax(dim=1)
                     y_T_mean = y_0_hat_batch
                     if config.diffusion.noise_prior:  # apply 0 instead of f_phi(x) as prior mean
                         y_T_mean = torch.zeros(y_0_hat_batch.shape).to(y_0_hat_batch.device)
@@ -329,7 +350,7 @@ class Diffusion(object):
                             optimizer = get_optimizer(self.config.optim, model.classifier.parameters())
                             changed_optim = True
                         output, classification_logits = model(x_batch, y_t_batch, t, y_0_hat_batch,
-                                                              include_classifier=True, cond_pred_model=self.cond_pred_model, x_unflat=x_unflat_batch)
+                                                              include_classifier=True, cond_pred_model=self.cond_pred_model, x_unflat=x_batch_beit)
 
                     loss_noise_estimation = (e - output).square().mean()  # use the same noise sample e during training to compute loss
                     loss_atten_ce = criterion(classification_logits, y_labels_batch.to(self.device))
@@ -490,6 +511,9 @@ class Diffusion(object):
                         acc_avg = 0.
                         atten_acc_avg = 0.
                         for test_batch_idx, (images, target) in enumerate(test_loader):
+                            if self.config.diffusion.aux_cls.arch == "beit_ckpt":
+                                images_beit = images.clone().to(self.device)
+                                images = nn.functional.interpolate(images, size=(32, 32))
                             images_unflat = images.to(self.device)
                             if config.data.dataset == "toy" \
                                     or config.model.arch == "simple" \
@@ -497,15 +521,24 @@ class Diffusion(object):
                                 images = torch.flatten(images, 1)
                             images = images.to(self.device)
                             target = target.to(self.device)
+
                             # target_vec = nn.functional.one_hot(target).float().to(self.device)
                             with torch.no_grad():
-                                target_pred = self.compute_guiding_prediction(images_unflat).softmax(dim=1)
+                                if self.config.diffusion.aux_cls.arch == "beit_ckpt":
+                                    target_pred = self.compute_guiding_prediction(images_beit)
+                                    target_pred = nn.functional.softmax(target_pred.logits, dim=1)
+                                else:
+                                    target_pred = self.compute_guiding_prediction(images_unflat).softmax(dim=1)
                                 # prior mean at timestep T
                                 y_T_mean = target_pred
                                 if config.diffusion.noise_prior:  # apply 0 instead of f_phi(x) as prior mean
                                     y_T_mean = torch.zeros(target_pred.shape).to(target_pred.device)
                                 if not config.diffusion.noise_prior:  # apply f_phi(x) instead of 0 as prior mean
-                                    target_pred = self.compute_guiding_prediction(images_unflat).softmax(dim=1)
+                                    if self.config.diffusion.aux_cls.arch == "beit_ckpt":
+                                        target_pred = self.compute_guiding_prediction(images_beit)
+                                        target_pred = nn.functional.softmax(target_pred.logits, dim=1)
+                                    else:
+                                        target_pred = self.compute_guiding_prediction(images_unflat).softmax(dim=1)
                                 label_t_0 = p_sample_loop(model, images, target_pred, y_T_mean,
                                                           self.num_timesteps, self.alphas,
                                                           self.one_minus_alphas_bar_sqrt,
@@ -513,7 +546,7 @@ class Diffusion(object):
                                 acc_avg += accuracy(label_t_0.detach().cpu(), target.cpu())[0].item()
                                 atten_label_t_0 = model.classifier(images, target_pred,
                                                                    model.conditional_model,
-                                                                   self.cond_pred_model, images_unflat)
+                                                                   self.cond_pred_model, images_beit)
                                 atten_acc_avg += accuracy(atten_label_t_0.detach().cpu(), target.cpu())[0].item()
                         acc_avg /= (test_batch_idx + 1)
                         atten_acc_avg /= (test_batch_idx + 1)

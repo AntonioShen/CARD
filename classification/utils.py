@@ -125,12 +125,21 @@ def get_dataset(args, config):
         test_dataset = torchvision.datasets.FashionMNIST(root=config.data.dataroot, train=False, download=True,
                                                          transform=transform)
     elif config.data.dataset == "CIFAR10":
-        data_norm_mean, data_norm_std = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
-        # data_norm_mean, data_norm_std = (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
-        transform = transforms.Compose(
-            [transforms.ToTensor(),
-             transforms.Normalize(mean=data_norm_mean, std=data_norm_std)
-             ])
+        if config.diffusion.aux_cls.arch == "beit_ckpt":
+            data_norm_mean, data_norm_std = (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
+            transform = transforms.Compose(
+                [transforms.Resize((224, 224)),
+                 transforms.ToTensor(),
+                 transforms.Normalize(mean=data_norm_mean, std=data_norm_std)
+                 ])
+        else:
+            data_norm_mean, data_norm_std = (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)
+            # data_norm_mean, data_norm_std = (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
+            transform = transforms.Compose(
+                [transforms.ToTensor(),
+                 transforms.Normalize(mean=data_norm_mean, std=data_norm_std)
+                 ])
+
         train_dataset = torchvision.datasets.CIFAR10(root=config.data.dataroot, train=True,
                                                      download=True, transform=transform)
         test_dataset = torchvision.datasets.CIFAR10(root=config.data.dataroot, train=False,

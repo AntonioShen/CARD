@@ -50,6 +50,7 @@ class ComplexSequenceClassifier(nn.Module):
 class NewClassifier(nn.Module):
     def __init__(self, config):
         super(NewClassifier, self).__init__()
+        self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         self.num_timesteps = config.diffusion.timesteps
@@ -77,12 +78,21 @@ class NewClassifier(nn.Module):
         self.mca = nn.Transformer(d_model=10, nhead=2, num_encoder_layers=4)
 
         self.lin = nn.Sequential(
-            nn.Linear(512, 10),
+            nn.Linear(197 * 768, 10),
             nn.ReLU(),)
+
+        self.lin2 = nn.Sequential(
+            nn.Linear(int(self.num_timesteps / self.granularity) * 10, 128),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 10),)
 
     def forward(self, x, y_0_hat_batch,
                 net,
                 cond_pred_model=None, x_unflat=None):
+        batch = x.shape[0]
         y_T_mean = y_0_hat_batch
         y_seq = p_sample_loop(net, x, y_0_hat_batch, y_T_mean, self.num_timesteps, self.alphas,
                               self.one_minus_alphas_bar_sqrt, only_last_sample=False)
@@ -90,12 +100,27 @@ class NewClassifier(nn.Module):
         selected_time_points = torch.stack(selected_time_points)
 
         if cond_pred_model is not None:
-            _feature = cond_pred_model(x_unflat, return_feature=True)
+            if self.config.diffusion.aux_cls.arch == 'beit_ckpt':
+                with torch.no_grad():
+                    #torch.Size([batch, 197, 768])
+                    _feature = cond_pred_model(x_unflat).hidden_states[-1]
+                    # flatten the feature using torch.flatten
+                    _feature = torch.flatten(_feature, start_dim=1)
+            else:
+                with torch.no_grad():
+                    _feature = cond_pred_model(x_unflat, return_feature=True)
             _feature = self.lin(_feature)
             # add one dimension to make it a sequence
             _feature = _feature.unsqueeze(0)
             logits = self.mca(_feature, selected_time_points)
-            logits = logits[-1]
+
+            # transpose seq and batch dimension
+            logits_transposed = logits.transpose(0, 1)  # now shape is (batch, seq, dim)
+
+            # reshape to (batch, seq * dim)
+            logits_reshaped = logits_transposed.contiguous().view(batch, -1)  # now shape is (batch, seq * dim)
+
+            logits = self.lin2(logits_reshaped)
         else:
             logits = self.msa(selected_time_points)
 
